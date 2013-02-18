@@ -7,7 +7,7 @@
          code_change/3]).
 
 %% Only for testing
--export([build_insert_query/1, build_table/1]).
+-export([build_insert_query/1, build_update_query/1, build_table/1]).
 
 -record(state, {
           conn
@@ -21,6 +21,7 @@ init(Args) ->
     Database = proplists:get_value(database, Args),
     Username = proplists:get_value(username, Args),
     Password = proplists:get_value(password, Args),
+    io:format("pgsql:connect(~p, ~p, ~p, [{database, ~p}])~n", [Hostname, Username, Password, Database]),
     {ok, Conn} = pgsql:connect(Hostname, Username, Password, [
         {database, Database}
     ]),
@@ -29,7 +30,13 @@ init(Args) ->
 
 handle_call({save, Model}, _From, #state{conn=Conn}=State) ->
     Table = erlang:element(1, Model),
-    Query = build_insert_query(Model),
+    Query =
+        case Model:id() of
+            'id' ->
+                build_insert_query(Model);
+            _ ->
+                build_update_query(Model)
+        end,
     Result = pgsql:equery(Conn, Query, []),
     Reply =
         case Result of
@@ -41,6 +48,9 @@ handle_call({save, Model}, _From, #state{conn=Conn}=State) ->
                 {error, Reason}
         end,
     {reply, Reply, State};
+
+handle_call({find, Conditions}, _From, #state{conn=Conn}=State) ->
+    {reply, ok, State};
 
 handle_call({create_table, Model}, _From, #state{conn=Conn}=State) ->
     Reply =
@@ -82,65 +92,81 @@ table_exist(Model, Conn) when is_atom(Model) ->
 
 build_table(Modelname) when is_atom(Modelname) ->
     Fields = Modelname:fields(),
-    Attributes = lists:foldl(
-                   fun({Field, Type, Args}, Acc) ->
-                           case Type of
-                               string ->
-                                   Val =
-                                       case proplists:get_value(max_length, Args) of
-                                                   undefined ->
-                                                       [atom_to_list(Field) ++ " TEXT "];
-                                                   Length ->
-                                                       [atom_to_list(Field) ++ " VARCHAR(" ++ integer_to_list(Length) ++ ") "]
-                                               end,
-                                           case proplists:get_value(not_null, Args) of
-                                               true ->
-                                                   [Val ++ " NOT NULL "|Acc];
-                                               _ ->
-                                                   Val ++ Acc
-                                           end;
-                                       binary ->
-                                           case proplists:get_value(not_null, Args) of
-                                               true ->
-                                                   [atom_to_list(Field) ++ " BYTEA NOT NULL"|Acc];
-                                               _ ->
-                                                   [atom_to_list(Field) ++ " BYTEA"|Acc]
-                                           end;
-                                       integer ->
-                                           case proplists:get_value(not_null, Args) of
-                                               true ->
-                                                   [atom_to_list(Field) ++ " INTEGER NOT NULL"|Acc];
-                                               _ ->
-                                                   [atom_to_list(Field) ++ " INTEGER"|Acc]
-                                           end;
-                                       float ->
-                                           case proplists:get_value(not_null, Args) of
-                                               true ->
-                                                   [atom_to_list(Field) ++ " REAL NOT NULL"|Acc];
-                                               _ ->
-                                                   [atom_to_list(Field) ++ " REAL"|Acc]
-                                           end;
-                                       boolean ->
-                                           case proplists:get_value(not_null, Args) of
-                                               true ->
-                                                   [atom_to_list(Field) ++ " BOOLEAN NOT NULL"|Acc];
-                                               _ ->
-                                                   [atom_to_list(Field) ++ " BOOLEAN"]
-                                           end;
-                                       primary_key ->
-                                           case proplists:get_value(auto_increment, Args) of
-                                               true ->
-                                                   [atom_to_list(Field) ++ " SERIAL PRIMARY KEY"|Acc];
-                                               _ ->
-                                                   [atom_to_list(Field) ++ " INTEGER PRIMARY KEY"|Acc]
-                                           end
-                                   end
-                           end, [], lists:revert(Modelname:fields())),
+    Attributes =
+        lists:foldl(
+          fun({Field, Type, Args}, Acc) ->
+                  case Type of
+                      string ->
+                          Val =
+                              case proplists:get_value(max_length, Args) of
+                                  undefined ->
+                                      [atom_to_list(Field) ++ " TEXT "];
+                                  Length ->
+                                      [atom_to_list(Field) ++ " VARCHAR(" ++ integer_to_list(Length) ++ ") "]
+                              end,
+                          case proplists:get_value(not_null, Args) of
+                              true ->
+                                  [Val ++ " NOT NULL "|Acc];
+                              _ ->
+                                  Val ++ Acc
+                          end;
+                      binary ->
+                          case proplists:get_value(not_null, Args) of
+                              true ->
+                                  [atom_to_list(Field) ++ " BYTEA NOT NULL"|Acc];
+                              _ ->
+                                  [atom_to_list(Field) ++ " BYTEA"|Acc]
+                          end;
+                      integer ->
+                          case proplists:get_value(not_null, Args) of
+                              true ->
+                                  [atom_to_list(Field) ++ " INTEGER NOT NULL"|Acc];
+                              _ ->
+                                  [atom_to_list(Field) ++ " INTEGER"|Acc]
+                          end;
+                      float ->
+                          case proplists:get_value(not_null, Args) of
+                              true ->
+                                  [atom_to_list(Field) ++ " REAL NOT NULL"|Acc];
+                              _ ->
+                                  [atom_to_list(Field) ++ " REAL"|Acc]
+                          end;
+                      boolean ->
+                          case proplists:get_value(not_null, Args) of
+                              true ->
+                                  [atom_to_list(Field) ++ " BOOLEAN NOT NULL"|Acc];
+                              _ ->
+                                  [atom_to_list(Field) ++ " BOOLEAN"]
+                          end;
+                      primary_key ->
+                          case proplists:get_value(auto_increment, Args) of
+                              true ->
+                                  [atom_to_list(Field) ++ " SERIAL PRIMARY KEY"|Acc];
+                              _ ->
+                                  [atom_to_list(Field) ++ " INTEGER PRIMARY KEY"|Acc]
+                          end
+                  end
+          end, [], lists:revert(Modelname:fields())),
 
-            ["CREATE TABLE ", atom_to_list(Modelname), " (",
-             string:join(Attributes, ","), ")"]
-    end.
+    ["CREATE TABLE ", atom_to_list(Modelname), " (",
+     string:join(Attributes, ","), ")"].
 
+
+build_update_query(Model) ->
+    Tablename = atom_to_list(element(1, Model)),
+    Fields = Model:fields(),
+    {Wheres, Values} =
+        lists:foldl(
+          fun({Field, primary_key, _Args}, {_, Vals}) ->
+                  {[atom_to_list(Field), "=", Model:Field()], Vals};
+             ({Field, _Type, _Args}, {Where, Vals}) ->
+                  {Where, [lists:concat([atom_to_list(Field) ++ "=" ++ pack_value(Model:Field())])|Vals]}
+          end,
+          {[], []}, Fields),
+    ["UPDATE ", Tablename, "SET ",
+     string:join(Values, ", "),
+     " WHERE "
+     |Wheres].
 
 build_insert_query(Model) ->
     Tablename = atom_to_list(element(1, Model)),
