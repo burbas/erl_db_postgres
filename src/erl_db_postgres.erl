@@ -13,6 +13,8 @@
           conn
          }).
 
+
+%%%%%% API %%%%%%%%
 start_link(Args) ->
     gen_server:start_link(?MODULE, Args, []).
 
@@ -21,12 +23,21 @@ init(Args) ->
     Database = proplists:get_value(database, Args),
     Username = proplists:get_value(username, Args),
     Password = proplists:get_value(password, Args),
+
+    erl_db_log:msg(debug, "~p started. Paramters: [{hostname, ~p}, {database, ~p}, {user, ~p}, {password, ~p}]", [?MODULE, Hostname, Database, Username, Password]),
     io:format("pgsql:connect(~p, ~p, ~p, [{database, ~p}])~n", [Hostname, Username, Password, Database]),
     {ok, Conn} = pgsql:connect(Hostname, Username, Password, [
         {database, Database}
     ]),
     {ok, #state{conn=Conn}}.
 
+
+handle_call({refresh, Model}, _From, #state{conn=Conn}=State) ->
+    Table = erlang:element(1, Model),
+    [PrimaryKeyField] = [ X || {X, Y, Z} <- Model:fields(), Y == primary_key ],
+
+    Where = build_select_query(Table, [{PrimaryKeyField, 'equal', Model:PrimaryKeyField()}]),
+    {reply, ok, State};
 
 handle_call({save, Model}, _From, #state{conn=Conn}=State) ->
     Table = erlang:element(1, Model),
@@ -40,10 +51,12 @@ handle_call({save, Model}, _From, #state{conn=Conn}=State) ->
     Result = pgsql:equery(Conn, Query, []),
     Reply =
         case Result of
-            {ok, _, _, [Id]} ->
+            {ok, _, _, [{Id}|_Tl]} ->
                 %% Get the primary key
-                [PrimKey|_] = get_fields_with_type(primary_key, Model),
+                [PrimKey|_] = get_fields_with_type(primary_key, Model:fields()),
                 {ok, Model:PrimKey(Id)};
+            {ok, _Id} ->
+                {ok, Model};
             {error, Reason} ->
                 {error, Reason}
         end,
@@ -56,6 +69,7 @@ handle_call({create_table, Model}, _From, #state{conn=Conn}=State) ->
     Reply =
         case table_exist(Model, Conn) of
             true ->
+                erl_db_log:msg(warning, "Table ~p does already exist", [Model]),
                 {error, table_already_exist};
             _ ->
                 Query = build_table(Model),
@@ -84,7 +98,9 @@ code_change(_OldVsn, State, _Extra) ->
 table_exist(Model, Conn) when is_atom(Model) ->
     Query = "SELECT * FROM information_schema.tables WHERE table_name=$1",
     case pgsql:equery(Conn, Query, [Model]) of
-        {ok, _Columns, _Fields} ->
+        {ok, _Columns, []} ->
+            false;
+        {ok, _Columns, _Field} ->
             true;
         _ ->
             false
@@ -138,6 +154,8 @@ build_table(Modelname) when is_atom(Modelname) ->
                               _ ->
                                   [atom_to_list(Field) ++ " BOOLEAN"]
                           end;
+                      datetime ->
+                          [atom_to_list(Field) ++ " TIMESTAMP"|Acc];
                       primary_key ->
                           case proplists:get_value(auto_increment, Args) of
                               true ->
@@ -146,11 +164,13 @@ build_table(Modelname) when is_atom(Modelname) ->
                                   [atom_to_list(Field) ++ " INTEGER PRIMARY KEY"|Acc]
                           end
                   end
-          end, [], lists:revert(Modelname:fields())),
+          end, [], lists:reverse(Modelname:fields())),
 
     ["CREATE TABLE ", atom_to_list(Modelname), " (",
      string:join(Attributes, ","), ")"].
 
+build_select_query(Tablename, Fields) ->
+    ok.
 
 build_update_query(Model) ->
     Tablename = atom_to_list(element(1, Model)),
@@ -158,12 +178,12 @@ build_update_query(Model) ->
     {Wheres, Values} =
         lists:foldl(
           fun({Field, primary_key, _Args}, {_, Vals}) ->
-                  {[atom_to_list(Field), "=", Model:Field()], Vals};
+                  {[atom_to_list(Field), "=", pack_value(Model:Field())], Vals};
              ({Field, _Type, _Args}, {Where, Vals}) ->
                   {Where, [lists:concat([atom_to_list(Field) ++ "=" ++ pack_value(Model:Field())])|Vals]}
           end,
           {[], []}, Fields),
-    ["UPDATE ", Tablename, "SET ",
+    ["UPDATE ", Tablename, " SET ",
      string:join(Values, ", "),
      " WHERE "
      |Wheres].
@@ -207,6 +227,7 @@ escape_sql1([$'|Rest], Acc) ->
     escape_sql1(Rest, [$', $'|Acc]);
 escape_sql1([C|Rest], Acc) ->
     escape_sql1(Rest, [C|Acc]).
+
 
 pack_datetime({Date, {Y, M, S}}) when is_float(S) ->
     pack_datetime({Date, {Y, M, erlang:round(S)}});
