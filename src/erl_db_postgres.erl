@@ -2,7 +2,9 @@
 -behaviour(gen_server).
 -behaviour(poolboy_worker).
 
+%% Api
 -export([start_link/1]).
+
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
          code_change/3]).
 
@@ -18,14 +20,15 @@
 start_link(Args) ->
     gen_server:start_link(?MODULE, Args, []).
 
+%%%%%% Internals %%%%%%%%
+
 init(Args) ->
     Hostname = proplists:get_value(hostname, Args),
     Database = proplists:get_value(database, Args),
     Username = proplists:get_value(username, Args),
     Password = proplists:get_value(password, Args),
 
-    erl_db_log:msg(debug, "~p started. Paramters: [{hostname, ~p}, {database, ~p}, {user, ~p}, {password, ~p}]", [?MODULE, Hostname, Database, Username, Password]),
-    io:format("pgsql:connect(~p, ~p, ~p, [{database, ~p}])~n", [Hostname, Username, Password, Database]),
+    erl_db_log:msg(debug, "~p started.", [?MODULE]),
     {ok, Conn} = pgsql:connect(Hostname, Username, Password, [
         {database, Database}
     ]),
@@ -34,13 +37,21 @@ init(Args) ->
 
 handle_call({refresh, Model}, _From, #state{conn=Conn}=State) ->
     Table = erlang:element(1, Model),
-    [PrimaryKeyField] = [ X || {X, Y, Z} <- Model:fields(), Y == primary_key ],
+    ModelAttributes = Table:module_info(attributes),
+    Fields = proplists:get_value(fields, ModelAttributes),
+    [PrimaryKeyField] = [ X || {X, Y, Z} <- Fields, Y == primary_key ],
 
     Where = build_select_query(Table, [{PrimaryKeyField, 'equal', Model:PrimaryKeyField()}]),
     {reply, ok, State};
 
+handle_call({delete, Model}, _From, #state{conn=Conn}=State) ->
+
+    {reply, ok, State};
+
 handle_call({save, Model}, _From, #state{conn=Conn}=State) ->
     Table = erlang:element(1, Model),
+    ModelAttributes = Table:module_info(attributes),
+    Fields = proplists:get_value(fields, ModelAttributes),
     Query =
         case Model:id() of
             'id' ->
@@ -53,7 +64,7 @@ handle_call({save, Model}, _From, #state{conn=Conn}=State) ->
         case Result of
             {ok, _, _, [{Id}|_Tl]} ->
                 %% Get the primary key
-                [PrimKey|_] = get_fields_with_type(primary_key, Model:fields()),
+                [PrimKey|_] = get_fields_with_type(primary_key, Fields),
                 {ok, Model:PrimKey(Id)};
             {ok, _Id} ->
                 {ok, Model};
@@ -107,7 +118,9 @@ table_exist(Model, Conn) when is_atom(Model) ->
     end.
 
 build_table(Modelname) when is_atom(Modelname) ->
-    Fields = Modelname:fields(),
+    ModelAttributes = Modelname:module_info(attributes),
+    Fields = proplists:get_value(fields, ModelAttributes),
+
     Attributes =
         lists:foldl(
           fun({Field, Type, Args}, Acc) ->
@@ -164,7 +177,7 @@ build_table(Modelname) when is_atom(Modelname) ->
                                   [atom_to_list(Field) ++ " INTEGER PRIMARY KEY"|Acc]
                           end
                   end
-          end, [], lists:reverse(Modelname:fields())),
+          end, [], lists:reverse(Fields)),
 
     ["CREATE TABLE ", atom_to_list(Modelname), " (",
      string:join(Attributes, ","), ")"].
@@ -173,8 +186,10 @@ build_select_query(Tablename, Fields) ->
     ok.
 
 build_update_query(Model) ->
-    Tablename = atom_to_list(element(1, Model)),
-    Fields = Model:fields(),
+    Modelname = element(1, Model),
+    Tablename = atom_to_list(Modelname),
+    ModelAttributes = Modulename:module_info(attributes),
+    Fields = proplists:get_value(fields, ModelAttributes),
     {Wheres, Values} =
         lists:foldl(
           fun({Field, primary_key, _Args}, {_, Vals}) ->
@@ -189,8 +204,10 @@ build_update_query(Model) ->
      |Wheres].
 
 build_insert_query(Model) ->
-    Tablename = atom_to_list(element(1, Model)),
-    Fields = Model:fields(),
+    Modelname = element(1, Model),
+    Tablename = atom_to_list(Modelname),
+    ModelAttributes = Modelname:module_info(attributes),
+    Fields = proplists:get_value(fields, ModuleAttributes),
     {Attributes, Values} =
         lists:foldl(
           fun({Field, primary_key, Args}, {Attrs, Vals}=Acc) ->
@@ -210,6 +227,8 @@ build_insert_query(Model) ->
      string:join(Values, ", "),
      ")",
      " RETURNING id"].
+
+
 
 get_fields_with_type(_Type, []) ->
     [];
