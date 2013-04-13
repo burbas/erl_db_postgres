@@ -188,7 +188,7 @@ build_select_query(Tablename, Fields) ->
 build_update_query(Model) ->
     Modelname = element(1, Model),
     Tablename = atom_to_list(Modelname),
-    ModelAttributes = Modulename:module_info(attributes),
+    ModelAttributes = Modelname:module_info(attributes),
     Fields = proplists:get_value(fields, ModelAttributes),
     {Wheres, Values} =
         lists:foldl(
@@ -207,7 +207,7 @@ build_insert_query(Model) ->
     Modelname = element(1, Model),
     Tablename = atom_to_list(Modelname),
     ModelAttributes = Modelname:module_info(attributes),
-    Fields = proplists:get_value(fields, ModuleAttributes),
+    Fields = proplists:get_value(fields, ModelAttributes),
     {Attributes, Values} =
         lists:foldl(
           fun({Field, primary_key, Args}, {Attrs, Vals}=Acc) ->
