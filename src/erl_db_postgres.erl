@@ -123,6 +123,7 @@ handle_call({save, Model}, _From, #state{conn=Conn, name = DBName}=State) ->
 handle_call({find, Tablename, Conditions, _Options}, _From, #state{conn=Conn}=State) ->
     %% This is a bit tricky since we need to know which table this belongs to
     Query = build_select_query(Tablename, Conditions),
+    io:format("Query: ~p~n", [Query]),
     {ok, Columns, Results} = pgsql:squery(Conn, lists:concat(Query)),
     %% We're getting correct results, but we need to model this after our model.
     Models = merge_result(Tablename, Columns, Results),
@@ -130,7 +131,17 @@ handle_call({find, Tablename, Conditions, _Options}, _From, #state{conn=Conn}=St
 
 
 handle_call({supported_conditions}, _From, State) ->
-    {reply, {ok, ['equals', 'not_equals']}, State};
+    SupportedConditions = [
+                           'equals',
+                           'not_equals',
+                           'greater_than',
+                           'less_than',
+                           'greater_equal_than',
+                           'less_equal_than',
+                           'like',
+                           'in'
+                          ],
+    {reply, {ok, SupportedConditions}, State};
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
@@ -305,6 +316,9 @@ merge_result([{column, Fieldname, Type, _, _, _}|ColTl], [Res|Results]) ->
     [{binary_to_atom(Fieldname, utf8), unpack_value(Res, Type)}|merge_result(ColTl, Results)].
 
 
+condition(Key, 'in', Val) when is_list(Val) ->
+    CommaVal = string:join(Val, ","),
+    lists:concat([Key, "in", "(", CommaVal, ")"]);
 condition(Key, Op, Val) ->
     lists:concat([Key, Op, pack_value(Val)]).
 
@@ -315,9 +329,21 @@ build_conditions(Conditions) ->
 build_conditions1([]) ->
     [];
 build_conditions1([{Key, 'equals', Value}|Tl]) ->
-    [condition(Key, "=", Value)|build_conditions1(Tl)];
+    [condition(Key, " = ", Value)|build_conditions1(Tl)];
 build_conditions1([{Key, 'not_equals', Value}|Tl]) ->
-    [condition(Key, "!=", Value)|build_conditions1(Tl)].
+    [condition(Key, " != ", Value)|build_conditions1(Tl)];
+build_conditions1([{Key, 'greater_than', Value}|Tl]) ->
+    [condition(Key, " > ", Value)|build_conditions1(Tl)];
+build_conditions1([{Key, 'less_than', Value}|Tl]) ->
+    [condition(Key, " < ", Value)|build_conditions1(Tl)];
+build_conditions1([{Key, 'greater_equal_than', Value}|Tl]) ->
+    [condition(Key, " >= ", Value)|build_conditions1(Tl)];
+build_conditions1([{Key, 'less_equal_than', Value}|Tl]) ->
+    [condition(Key, " <= ", Value)|build_conditions1(Tl)];
+build_conditions1([{Key, 'like', Value}|Tl]) ->
+    [condition(Key, " LIKE ", Value)|build_conditions1(Tl)];
+build_conditions1([{Key, 'in', Value}|Tl]) ->
+    [condition(Key, " IN ", Value)|Tl].
 
 
 escape_sql(Value) ->
